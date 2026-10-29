@@ -1,3 +1,4 @@
+
 version: 0.2
 
 phases:
@@ -7,16 +8,48 @@ phases:
     commands:
       - npm ci
 
-  pre_build:
-    commands:
-      - npm run
-
   build:
     commands:
       - npm run build
+      - |
+        set -e
 
-artifacts:
-  files:
-    - 'dist/**/*'
-    - 'appspec.yml'
-    - 'scripts/**/*'
+        BUCKET="react-aws-cicd-artifacts-ananya-2026"
+        INSTANCE_ID="i-00b6ff504df314b4f"
+        REGION="us-east-1"
+        ZIP_FILE="react-${CODEBUILD_BUILD_NUMBER}.zip"
+        S3_KEY="deployments/${ZIP_FILE}"
+
+        echo "Packaging React build..."
+        (cd dist && zip -qr "../${ZIP_FILE}" .)
+
+        echo "Uploading build to S3..."
+        aws s3 cp "${ZIP_FILE}" "s3://${BUCKET}/${S3_KEY}" --region "${REGION}"
+
+        echo "Preparing EC2 deployment command..."
+        REMOTE_COMMAND="set -e; command -v unzip >/dev/null 2>&1 || (apt-get update && apt-get install -y unzip); aws s3 cp s3://${BUCKET}/${S3_KEY} /tmp/react-app.zip; rm -rf /tmp/react-app-deploy; mkdir -p /tmp/react-app-deploy /var/www/react-aws-cicd; unzip -oq /tmp/react-app.zip -d /tmp/react-app-deploy; find /var/www/react-aws-cicd -mindepth 1 -maxdepth 1 -exec rm -rf {} +; cp -a /tmp/react-app-deploy/. /var/www/react-aws-cicd/; chown -R www-data:www-data /var/www/react-aws-cicd; nginx -t; systemctl reload nginx; curl -fsS http://localhost/health"
+
+        PARAMETERS=$(python3 -c 'import json,sys; print(json.dumps({"commands":[sys.argv[1]]}))' "$REMOTE_COMMAND")
+
+        echo "Sending deployment command to EC2..."
+        COMMAND_ID=$(aws ssm send-command \
+          --region "${REGION}" \
+          --instance-ids "${INSTANCE_ID}" \
+          --document-name "AWS-RunShellScript" \
+          --comment "Deploy React build ${CODEBUILD_BUILD_NUMBER}" \
+          --parameters "${PARAMETERS}" \
+          --query "Command.CommandId" \
+          --output text)
+
+        echo "Waiting for deployment: ${COMMAND_ID}"
+        aws ssm wait command-executed \
+          --region "${REGION}" \
+          --command-id "${COMMAND_ID}" \
+          --instance-id "${INSTANCE_ID}"
+
+        aws ssm get-command-invocation \
+          --region "${REGION}" \
+          --command-id "${COMMAND_ID}" \
+          --instance-id "${INSTANCE_ID}" \
+          --query '{Status:Status,Output:StandardOutputContent,Errors:StandardErrorContent}' \
+          --output json
