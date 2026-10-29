@@ -1,0 +1,22 @@
+version: 0.0
+os: linux
+
+files:
+  - source: dist
+    destination: /var/www/react-aws-cicd
+
+hooks:
+  AfterInstall:
+    - location: scripts/after_install.sh
+      timeout: 120
+      runas: root
+
+  ApplicationStart:
+    - location: scripts/application_start.sh
+      timeout: 60
+      runas: root
+
+  ValidateService:
+    - location: scripts/validate_service.sh
+      timeout: 60
+      runas: root
